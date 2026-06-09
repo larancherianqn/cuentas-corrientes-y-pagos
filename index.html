@@ -829,10 +829,25 @@ function cargarSaldosDrive() {
     saldosCargando = false;
     if (data && data.ok && data.saldos) {
       data.saldos.forEach(function(item){
-        SALDOS_LIVE[item.proveedor.toUpperCase()] = item.saldo;
-        // actualizar SALDOS_DATA del tab Saldos
-        var sd = SALDOS_DATA.find(function(x){return x.nombre===item.proveedor.toUpperCase();});
-        if (sd) sd.saldo = item.saldo;
+        var nombre = item.proveedor.toUpperCase().trim();
+        var saldoNum = Number(item.saldo) || 0;
+        // redondear casi-ceros (restos de decimales del Sheet)
+        if (Math.abs(saldoNum) < 1) saldoNum = 0;
+        SALDOS_LIVE[nombre] = saldoNum;
+        var sd = SALDOS_DATA.find(function(x){return x.nombre===nombre;});
+        if (sd) {
+          sd.saldo = saldoNum;
+        } else {
+          // proveedor que está en Drive pero no en la lista local: agregarlo
+          SALDOS_DATA.push({
+            nombre: nombre,
+            cat: item.cat || "gastos",
+            saldo: saldoNum,
+            vencido: 0,
+            plazo: (PROV_CONFIG[nombre] ? PROV_CONFIG[nombre].plazo : 7),
+            movimientos: []
+          });
+        }
       });
       renderSaldos(document.getElementById("filtro-cat") ? document.getElementById("filtro-cat").value : "");
       renderPorProveedor();
@@ -1097,6 +1112,10 @@ function sugerirFacturas() {
 function calcularPorProveedor() {
   var hoy = new Date();
   var map = {};
+  // Sembrar con los proveedores que tienen saldo real en Drive
+  SALDOS_DATA.forEach(function(sd){
+    if(!map[sd.nombre]) map[sd.nombre]={nombre:sd.nombre,cat:sd.cat,total:0,vencido:0,items:[],calc:0};
+  });
   MOVIMIENTOS.forEach(function(m){
     if(!map[m.proveedor]) map[m.proveedor]={nombre:m.proveedor,cat:m.cat,total:0,vencido:0,items:[],calc:0};
     var g = map[m.proveedor];
