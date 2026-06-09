@@ -231,6 +231,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
             <input type="date" id="cc-venc"/>
           </div>
         </div>
+        <div id="cc-venc-nota" style="display:none;font-size:12px;color:#92400E;background:#FEF3C7;border-radius:8px;padding:8px 10px;margin-top:2px">⏳ <b>A contra factura:</b> esta factura queda abierta y, al cargarla, las anteriores de este proveedor se marcan como vencidas.</div>
       </div>
 
       <div id="campos-haber" style="display:none">
@@ -422,6 +423,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <input type="number" id="cfg-plazo" placeholder="7" value="7"/>
         </div>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#6B7280;margin:0 0 12px;cursor:pointer">
+        <input type="checkbox" id="cfg-contra" style="width:auto" onchange="toggleContra('cfg')"/>
+        A contra factura (la anterior vence al cargar una nueva)
+      </label>
       <div class="field">
         <label>Razón social</label>
         <input type="text" id="cfg-razon" placeholder="Opcional"/>
@@ -509,6 +514,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         <input type="number" id="edit-plazo"/>
       </div>
     </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#6B7280;margin:0 0 12px;cursor:pointer">
+      <input type="checkbox" id="edit-contra" style="width:auto" onchange="toggleContra('edit')"/>
+      A contra factura (la anterior vence al cargar una nueva)
+    </label>
     <div class="field">
       <label>Razón social</label>
       <input type="text" id="edit-razon" placeholder="Opcional"/>
@@ -580,9 +589,9 @@ const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx9MksjfE753AvlA7NeE
 
 // Listas por defecto (semilla inicial). Plazo: gastos suelen ser de contado (1), resto 7.
 const PROV_DEFAULT = {
-  cocina:  ["FORMAGGIO","TINA","HARINAS","PEPINO LOCO","GRANJA VASCA","EMMA SRL","LA HORMA","POTRERO SAS","MILA EXPRESS","LA FABRICA MILANESAS","VERDULERIA RIO DULCE","OLIVARES DEL SOL","DIETÉTICA"],
-  bebidas: ["GROWLER","BRUSELAS","CABRONA","MONOS","ALMACEN CERVECERO","TUPINTAYA","STRANGE","ZETA BIRRA","MUR","COCA COLA","4 REINAS","KPI","BEVÍAMO","BLUTE","SODA NICO","EL SATELITE HIELO","ALTO HIELO","LAURUS","WALLY DISTRIBUCIÓN","ÚNICO","MOSTRA KOMBUCHA","NIHILISTA","JABALINA"],
-  gastos:  ["PAPELERA NEUQUEN","PGC","NEUCOR","RAUL GAVAROTTO","SAFITA","TRANSPORTE","DISTRIBUIDORA OLIVOS"],
+  cocina:  [],
+  bebidas: [],
+  gastos:  [],
 };
 
 // PROV_CONFIG: objeto { "NOMBRE": {nombre, cat, plazo} } — fuente única de proveedores
@@ -642,6 +651,9 @@ function getProveedores(cat){
 function getPlazo(nombre){
   return PROV_CONFIG[nombre] ? PROV_CONFIG[nombre].plazo : 7;
 }
+function esContraFactura(nombre){
+  return !!(PROV_CONFIG[nombre] && PROV_CONFIG[nombre].contraFactura);
+}
 
 // ── Rubros de costos fijos ────────────────────────────────────
 const RUBROS_DEFAULT = ["SUELDOS","ALQUILERES","SERVICIOS","IMPUESTOS","HONORARIOS","SUSCRIPCIONES","FINANCIEROS","SEGUROS","RETIRO SOCIOS"];
@@ -695,15 +707,59 @@ function guardarMovsApp() {
 
 // ── Gastos diarios (para el resumen mensual) ──────────────────
 const GD_KEY = "rancheria_gastos_diarios_v1";
-var GASTOS_DIARIOS = [];   // [{fecha, mes, importe, categoria, medio}]
+var GASTOS_DIARIOS = [];   // lo que ve el Resumen = Drive + locales no sincronizados
+var GASTOS_LOCAL = [];     // gastos cargados desde la app (persistidos)
+var GASTOS_DRIVE = [];     // gastos leídos de la hoja FACTURAS VARIAS de Drive
 function inicializarGastosDiarios() {
   try {
     var raw = localStorage.getItem(GD_KEY);
-    if(raw){ var s = JSON.parse(raw); if(Array.isArray(s)) GASTOS_DIARIOS = s; }
+    if(raw){ var s = JSON.parse(raw); if(Array.isArray(s)) GASTOS_LOCAL = s; }
   } catch(e){}
+  GASTOS_DIARIOS = GASTOS_LOCAL.slice();
 }
 function guardarGastosDiarios() {
-  try { localStorage.setItem(GD_KEY, JSON.stringify(GASTOS_DIARIOS)); } catch(e){}
+  try { localStorage.setItem(GD_KEY, JSON.stringify(GASTOS_LOCAL)); } catch(e){}
+}
+function huellaGasto(g){
+  return (g.fecha||"")+"|"+String(g.desc||g.concepto||"").toUpperCase().trim()+"|"+Math.round(Number(g.importe)||0)+"|"+String(g.medio||"").toUpperCase().trim();
+}
+function recomputarGastos(){
+  var huellas = {};
+  GASTOS_DRIVE.forEach(function(g){ huellas[huellaGasto(g)] = true; });
+  // Drive + los locales que todavía no aparecen en Drive (para no duplicar)
+  GASTOS_DIARIOS = GASTOS_DRIVE.concat(
+    GASTOS_LOCAL.filter(function(l){ return !huellas[huellaGasto(l)]; })
+  );
+}
+// Lee los gastos de la hoja FACTURAS VARIAS de Drive (JSONP)
+function cargarGastosDrive(){
+  var cb = "cbGastos_" + Date.now();
+  var s = document.createElement("script");
+  window[cb] = function(data){
+    delete window[cb];
+    if (s.parentNode) s.parentNode.removeChild(s);
+    if (data && data.ok && Array.isArray(data.gastos)) {
+      GASTOS_DRIVE = data.gastos.map(function(g){
+        var fecha = String(g.fecha||"");
+        return {
+          fecha: fecha,
+          mes: fecha.length>=7 ? fecha.substring(0,7) : "",
+          importe: Number(g.importe)||0,
+          categoria: g.categoria||"GASTOS VARIOS",
+          medio: g.medio||"",
+          desc: g.concepto||"",
+          quien: g.quien||"",
+          origen: "drive"
+        };
+      });
+      recomputarGastos();
+      if(typeof renderResumen==="function" && document.getElementById("res-mes"))
+        renderResumen(document.getElementById("res-mes").value);
+    }
+  };
+  s.src = SCRIPT_URL + "?action=gastos&callback=" + cb;
+  s.onerror = function(){ delete window[cb]; if(s.parentNode) s.parentNode.removeChild(s); };
+  document.body.appendChild(s);
 }
 
 function refrescarSelectRubros() {
@@ -762,33 +818,14 @@ var MOVIMIENTOS = [
   {id:"p4",proveedor:"PGC",cat:"gastos",fecha:"2026-05-23",desc:"PEDIDO",ref:"7-1361",debe:75000,haber:0,venc:"2026-05-30"},
 ];
 
-var SALDOS_DATA = [
-  {nombre:"FORMAGGIO",cat:"cocina",saldo:2912103,vencido:2912103,plazo:7,movimientos:[{fecha:"29-05",desc:"PEDIDO",ref:"R2-4239",debe:682356,haber:0},{fecha:"27-05",desc:"PEDIDO",ref:"R2-4189",debe:427063,haber:0},{fecha:"22-05",desc:"PEDIDO",ref:"R2-4085",debe:293650,haber:0},{fecha:"19-05",desc:"PAGO MP",ref:"",debe:0,haber:2109540},{fecha:"13-05",desc:"PEDIDO",ref:"R2-3905",debe:606345,haber:0}]},
-  {nombre:"TINA",cat:"cocina",saldo:908377,vencido:465101,plazo:7,movimientos:[{fecha:"01-06",desc:"PEDIDO",ref:"7-1113",debe:443277,haber:0},{fecha:"04-06",desc:"PAGO MP",ref:"",debe:0,haber:696559},{fecha:"23-05",desc:"PEDIDO",ref:"7-1101",debe:217221,haber:0}]},
-  {nombre:"PEPINO LOCO",cat:"cocina",saldo:180000,vencido:0,plazo:7,movimientos:[{fecha:"04-06",desc:"PEDIDO",ref:"7-3383",debe:63112,haber:0},{fecha:"03-06",desc:"PEDIDO",ref:"7-3376",debe:36952,haber:0}]},
-  {nombre:"GRANJA VASCA",cat:"cocina",saldo:186523,vencido:186523,plazo:7,movimientos:[{fecha:"29-05",desc:"PEDIDO",ref:"",debe:186523,haber:0}]},
-  {nombre:"EMMA SRL",cat:"cocina",saldo:415981,vencido:0,plazo:7,movimientos:[{fecha:"02-06",desc:"PEDIDO",ref:"2-5281",debe:65120,haber:0},{fecha:"04-06",desc:"PAGO MP",ref:"",debe:0,haber:392629},{fecha:"26-05",desc:"PEDIDO",ref:"2-5251",debe:133009,haber:0}]},
-  {nombre:"LA HORMA",cat:"cocina",saldo:206030,vencido:206030,plazo:7,movimientos:[{fecha:"04-06",desc:"PEDIDO",ref:"",debe:96900,haber:0},{fecha:"22-05",desc:"PEDIDO",ref:"4-130",debe:71839,haber:0}]},
-  {nombre:"POTRERO SAS",cat:"cocina",saldo:279000,vencido:279000,plazo:7,movimientos:[{fecha:"25-02",desc:"PEDIDO",ref:"R10160",debe:151000,haber:0}]},
-  {nombre:"GROWLER",cat:"bebidas",saldo:529628,vencido:318096,plazo:7,movimientos:[{fecha:"27-05",desc:"PEDIDO",ref:"R-27052026-1",debe:187812,haber:0},{fecha:"27-05",desc:"PAGO EFECTIVO",ref:"",debe:0,haber:217800},{fecha:"05-05",desc:"PEDIDO",ref:"R-0505206-1",debe:318096,haber:0}]},
-  {nombre:"BRUSELAS",cat:"bebidas",saldo:102400,vencido:102400,plazo:7,movimientos:[{fecha:"04-06",desc:"PEDIDO",ref:"",debe:132000,haber:0}]},
-  {nombre:"CABRONA",cat:"bebidas",saldo:1468500,vencido:1468500,plazo:7,movimientos:[{fecha:"03-06",desc:"PEDIDO",ref:"",debe:400000,haber:0},{fecha:"20-05",desc:"PEDIDO",ref:"",debe:350000,haber:0}]},
-  {nombre:"TUPINTAYA",cat:"bebidas",saldo:538440,vencido:538440,plazo:7,movimientos:[{fecha:"MAY",desc:"PEDIDO",ref:"",debe:538440,haber:0}]},
-  {nombre:"ZETA BIRRA",cat:"bebidas",saldo:1095000,vencido:1095000,plazo:7,movimientos:[{fecha:"MAY",desc:"PEDIDO",ref:"",debe:1095000,haber:0}]},
-  {nombre:"MUR",cat:"bebidas",saldo:223980,vencido:223980,plazo:7,movimientos:[{fecha:"MAY",desc:"PEDIDO",ref:"",debe:223980,haber:0}]},
-  {nombre:"COCA COLA",cat:"bebidas",saldo:1094073,vencido:1094073,plazo:7,movimientos:[{fecha:"MAY",desc:"PEDIDO",ref:"",debe:1094073,haber:0}]},
-  {nombre:"ALMACEN CERVECERO",cat:"bebidas",saldo:586116,vencido:0,plazo:7,movimientos:[{fecha:"MAY",desc:"PEDIDO",ref:"",debe:586116,haber:0}]},
-  {nombre:"KPI",cat:"bebidas",saldo:696005,vencido:696005,plazo:7,movimientos:[{fecha:"MAY",desc:"PEDIDO",ref:"",debe:696005,haber:0}]},
-  {nombre:"PGC",cat:"gastos",saldo:351600,vencido:351600,plazo:1,movimientos:[{fecha:"23-05",desc:"PEDIDO",ref:"7-1361",debe:75000,haber:0},{fecha:"20-05",desc:"PAGO MP",ref:"",debe:0,haber:517600}]},
-  {nombre:"NEUCOR",cat:"gastos",saldo:120048,vencido:120048,plazo:7,movimientos:[{fecha:"03-06",desc:"PEDIDO",ref:"4-5258",debe:69384,haber:0}]},
-  {nombre:"PAPELERA NEUQUEN",cat:"gastos",saldo:0,vencido:0,plazo:1,movimientos:[{fecha:"30-06",desc:"PAGO FC 9357",ref:"",debe:0,haber:71159}]},
-];
+var SALDOS_DATA = [];  // se llena automáticamente con los saldos reales de Drive
 
 // ── Estado ──────────────────────────────────────────────────
 var tipo = "debe";
 var modo = "cc";
 var facturasSeleccionadas = {};
 var SALDOS_LIVE = {};   // saldos reales leídos del Sheet: { "PROVEEDOR": saldo }
+var SALDOS_LIVE_VENC = {};  // vencido real por proveedor: { "PROVEEDOR": vencido }
 var saldosCargando = false;
 
 // ── Init ─────────────────────────────────────────────────────
@@ -815,6 +852,7 @@ document.addEventListener("DOMContentLoaded", function(){
   paso(renderTodos);
   paso(function(){ renderConfigList(""); });
   paso(cargarSaldosDrive);
+  paso(cargarGastosDrive);
 });
 
 // ── Leer saldos reales desde Drive (JSONP) ────────────────────
@@ -828,29 +866,43 @@ function cargarSaldosDrive() {
     if (s.parentNode) s.parentNode.removeChild(s);
     saldosCargando = false;
     if (data && data.ok && data.saldos) {
+      var driveNombres = {};
       data.saldos.forEach(function(item){
         var nombre = item.proveedor.toUpperCase().trim();
+        var cat = item.cat || "gastos";
         var saldoNum = Number(item.saldo) || 0;
-        // redondear casi-ceros (restos de decimales del Sheet)
+        var vencNum = Number(item.vencido) || 0;
         if (Math.abs(saldoNum) < 1) saldoNum = 0;
+        if (vencNum < 1) vencNum = 0;
+        driveNombres[nombre] = true;
         SALDOS_LIVE[nombre] = saldoNum;
+        SALDOS_LIVE_VENC[nombre] = vencNum;
+        if (!PROV_CONFIG[nombre]) {
+          PROV_CONFIG[nombre] = { nombre:nombre, cat:cat, plazo:plazoPorDefecto(cat) };
+        }
         var sd = SALDOS_DATA.find(function(x){return x.nombre===nombre;});
-        if (sd) {
-          sd.saldo = saldoNum;
-        } else {
-          // proveedor que está en Drive pero no en la lista local: agregarlo
+        if (sd) { sd.saldo = saldoNum; sd.vencidoDrive = vencNum; }
+        else {
           SALDOS_DATA.push({
-            nombre: nombre,
-            cat: item.cat || "gastos",
-            saldo: saldoNum,
-            vencido: 0,
-            plazo: (PROV_CONFIG[nombre] ? PROV_CONFIG[nombre].plazo : 7),
-            movimientos: []
+            nombre: nombre, cat: cat, saldo: saldoNum, vencido: 0, vencidoDrive: vencNum,
+            plazo: (PROV_CONFIG[nombre] ? PROV_CONFIG[nombre].plazo : 7), movimientos: []
           });
         }
       });
+      // Limpiar proveedores fantasma: los que no están en Drive y no tienen movimientos locales
+      Object.keys(PROV_CONFIG).forEach(function(n){
+        var tieneLocal = MOVIMIENTOS.some(function(m){return m.proveedor===n;});
+        if (!driveNombres[n] && !tieneLocal) delete PROV_CONFIG[n];
+      });
+      SALDOS_DATA = SALDOS_DATA.filter(function(x){
+        var tieneLocal = MOVIMIENTOS.some(function(m){return m.proveedor===x.nombre;});
+        return driveNombres[x.nombre] || tieneLocal;
+      });
+      guardarConfig();
+      filtrarProveedores();
       renderSaldos(document.getElementById("filtro-cat") ? document.getElementById("filtro-cat").value : "");
       renderPorProveedor();
+      if(typeof renderConfigList==="function" && document.getElementById("cfg-filtro")) renderConfigList(document.getElementById("cfg-filtro").value);
     }
     actualizarBannerSaldos();
   };
@@ -974,6 +1026,14 @@ function calcularVencimiento() {
   if(tipo!=="debe") return;
   var prov = document.getElementById("cc-prov").value;
   var fechaStr = document.getElementById("cc-fecha").value;
+  var nota = document.getElementById("cc-venc-nota");
+  // Proveedor a contra factura: la factura queda abierta (sin fecha fija)
+  if(prov && esContraFactura(prov)){
+    document.getElementById("cc-venc").value = "";
+    if(nota) nota.style.display = "block";
+    return;
+  }
+  if(nota) nota.style.display = "none";
   if(!prov || !fechaStr) return;
   var plazo = getPlazo(prov);
   var f = new Date(fechaStr+"T00:00:00");
@@ -1114,13 +1174,19 @@ function calcularPorProveedor() {
   var map = {};
   // Sembrar con los proveedores que tienen saldo real en Drive
   SALDOS_DATA.forEach(function(sd){
-    if(!map[sd.nombre]) map[sd.nombre]={nombre:sd.nombre,cat:sd.cat,total:0,vencido:0,items:[],calc:0};
+    if(!map[sd.nombre]) map[sd.nombre]={nombre:sd.nombre,cat:sd.cat,total:0,vencido:0,items:[],calc:0,oldestVenc:null};
   });
   MOVIMIENTOS.forEach(function(m){
-    if(!map[m.proveedor]) map[m.proveedor]={nombre:m.proveedor,cat:m.cat,total:0,vencido:0,items:[],calc:0};
+    if(!map[m.proveedor]) map[m.proveedor]={nombre:m.proveedor,cat:m.cat,total:0,vencido:0,items:[],calc:0,oldestVenc:null};
     var g = map[m.proveedor];
     g.calc += (m.debe - m.haber);
-    if(m.debe>0 && m.venc && new Date(m.venc)<hoy && !m.pagada) g.vencido += m.debe;
+    if(m.debe>0 && m.venc && !m.pagada){
+      var vd = new Date(m.venc);
+      if(vd < hoy){
+        g.vencido += m.debe;
+        if(g.oldestVenc===null || vd < g.oldestVenc) g.oldestVenc = vd;  // factura vencida más antigua
+      }
+    }
     g.items.push(m);
   });
   // Usar saldo real de Drive como total si está disponible; si no, el calculado
@@ -1129,9 +1195,26 @@ function calcularPorProveedor() {
     var live = SALDOS_LIVE[g.nombre.toUpperCase()];
     g.total = (live !== undefined) ? live : g.calc;
     g.esLive = (live !== undefined);
+    // Vencido de Drive (histórico) si es mayor que el calculado de los movimientos locales
+    var liveV = SALDOS_LIVE_VENC[g.nombre.toUpperCase()];
+    if (liveV !== undefined && liveV > g.vencido) g.vencido = liveV;
   });
   return Object.keys(map).map(function(k){return map[k];})
-    .sort(function(a,b){return b.total-a.total;});
+    .sort(function(a,b){
+      // 1) Arriba los que tienen facturas vencidas
+      var av = a.vencido>0, bv = b.vencido>0;
+      if(av && !bv) return -1;
+      if(bv && !av) return 1;
+      if(av && bv){
+        // entre los vencidos, primero los que están vencidos hace más tiempo
+        if(a.oldestVenc && b.oldestVenc) return a.oldestVenc - b.oldestVenc;
+        if(a.oldestVenc) return -1;
+        if(b.oldestVenc) return 1;
+        return b.vencido - a.vencido;
+      }
+      // 2) Sin vencidas: por saldo total (mayor primero)
+      return b.total - a.total;
+    });
 }
 
 function renderPorProveedor() {
@@ -1142,10 +1225,21 @@ function renderPorProveedor() {
     return;
   }
   var html='<div class="saldo-list">';
+  var hoy=new Date();
   lista.forEach(function(s){
     var badgeCls=s.cat==="cocina"?"badge-cocina":s.cat==="bebidas"?"badge-bebidas":"badge-gastos";
     var badgeTxt=s.cat==="cocina"?"Cocina":s.cat==="bebidas"?"Bebidas":"Gastos";
-    var vencHtml=s.vencido>0?'<div class="saldo-venc">venc. '+fmtARS(s.vencido)+'</div>':(s.total>0?'<div class="saldo-aldia">al día ✓</div>':'');
+    var vencHtml;
+    if(s.vencido>0){
+      var diasTxt="";
+      if(s.oldestVenc){
+        var dias=Math.floor((hoy - s.oldestVenc)/86400000);
+        if(dias>0) diasTxt=' · hace '+dias+'d';
+      }
+      vencHtml='<div class="saldo-venc">venc. '+fmtARS(s.vencido)+diasTxt+'</div>';
+    } else {
+      vencHtml=(s.total>0?'<div class="saldo-aldia">al día ✓</div>':'');
+    }
     html+='<button class="saldo-item" onclick=\'openProvDetail("'+s.nombre+'")\'>' +
       '<div style="flex:1;min-width:0"><div class="saldo-nombre">'+s.nombre+'</div>'+
       '<span class="badge '+badgeCls+'">'+badgeTxt+'</span></div>'+
@@ -1288,17 +1382,25 @@ function renderTodos() {
 }
 
 // ── Saldos ─────────────────────────────────────────────────────
+function vencidoEf(s){ return Math.max(Number(s.vencido)||0, Number(s.vencidoDrive)||0); }
 function renderSaldos(filtro) {
   var lista=filtro?SALDOS_DATA.filter(function(s){return s.cat===filtro;}):SALDOS_DATA;
   var totalD=lista.reduce(function(a,s){return a+s.saldo;},0);
-  var totalV=lista.reduce(function(a,s){return a+s.vencido;},0);
+  var totalV=lista.reduce(function(a,s){return a+vencidoEf(s);},0);
   document.getElementById("total-deuda").textContent=fmtARS(totalD);
   document.getElementById("total-venc").textContent=fmtARS(totalV);
   var html="";
+  lista.sort(function(a,b){
+    var av=vencidoEf(a)>0, bv=vencidoEf(b)>0;
+    if(av&&!bv) return -1;
+    if(bv&&!av) return 1;
+    return b.saldo-a.saldo;
+  });
   lista.forEach(function(s){
+    var venc=vencidoEf(s);
     var badgeCls=s.cat==="cocina"?"badge-cocina":s.cat==="bebidas"?"badge-bebidas":"badge-gastos";
     var badgeTxt=s.cat==="cocina"?"Cocina":s.cat==="bebidas"?"Bebidas":"Gastos";
-    var vencHtml=s.vencido>0?'<div class="saldo-venc">venc. '+fmtARS(s.vencido)+'</div>':(s.saldo>0?'<div class="saldo-aldia">al día ✓</div>':'');
+    var vencHtml=venc>0?'<div class="saldo-venc">venc. '+fmtARS(venc)+'</div>':(s.saldo>0?'<div class="saldo-aldia">al día ✓</div>':'');
     html+='<button class="saldo-item" onclick=\'openModal("'+s.nombre+'")\'>' +
       '<div style="flex:1;min-width:0"><div class="saldo-nombre">'+s.nombre+'</div>'+
       '<span class="badge '+badgeCls+'">'+badgeTxt+'</span></div>'+
@@ -1322,9 +1424,10 @@ function openModal(nombre) {
   var vc=document.getElementById("m-venc-card");
   var vl=document.getElementById("m-venc-lbl");
   var vv=document.getElementById("m-venc");
-  if(s.vencido>0){vc.style.cssText="background:#FEF2F2;border:1px solid #FCA5A5;border-radius:10px;padding:12px";vl.style.color="#DC2626";vv.style.color="#DC2626";}
+  var venc=vencidoEf(s);
+  if(venc>0){vc.style.cssText="background:#FEF2F2;border:1px solid #FCA5A5;border-radius:10px;padding:12px";vl.style.color="#DC2626";vv.style.color="#DC2626";}
   else{vc.style.cssText="background:#F0FDF4;border:1px solid #86EFAC;border-radius:10px;padding:12px";vl.style.color="#16A34A";vv.style.color="#16A34A";}
-  vv.textContent=fmtARS(s.vencido);
+  vv.textContent=fmtARS(venc);
   var movsHtml="";
   s.movimientos.forEach(function(m){
     var isDebe=m.debe>0;
@@ -1351,6 +1454,7 @@ function submitCC() {
   var medio=document.getElementById("cc-medio").value;
   var obs=document.getElementById("cc-obs").value;
   var esDebe=tipo==="debe";
+  var contraF=esContraFactura(prov);
 
   // Armar descripción con refs de facturas seleccionadas
   var refsSelec=Object.keys(facturasSeleccionadas).map(function(id){
@@ -1365,6 +1469,7 @@ function submitCC() {
     debe:esDebe?parseFloat(importe):0,
     haber:!esDebe?parseFloat(importe):0,
     medioPago:medio,
+    contraFactura: contraF,
     // Facturas a marcar como PAGADAS en la hoja (solo en pagos con facturas seleccionadas)
     marcarPagadas: (!esDebe && refsSelec.length) ? refsSelec : []
   };
@@ -1383,6 +1488,16 @@ function submitCC() {
       };
       MOVIMIENTOS.push(nuevo);
       MOVS_APP.push(nuevo); guardarMovsApp();
+      // Contra factura: al cargar una factura nueva, las anteriores de este proveedor vencen
+      if(esDebe && contraF){
+        MOVIMIENTOS.forEach(function(m){
+          if(m.proveedor===prov && m.debe>0 && !m.pagada && m.id!==nuevo.id){ m.venc=fecha; }
+        });
+        MOVS_APP.forEach(function(m){
+          if(m.proveedor===prov && m.debe>0 && !m.pagada && m.id!==nuevo.id){ m.venc=fecha; }
+        });
+        guardarMovsApp();
+      }
       // Marcar las facturas pagadas en el estado local (para que no figuren más como vencidas)
       if(!esDebe && idsSeleccionados.length){
         idsSeleccionados.forEach(function(id){
@@ -1451,7 +1566,8 @@ function submitFactura() {
   var quien=document.getElementById("f-quien").value;
   enviar({modo:"facturas",fecha:fecha,descripcion:desc,debe:parseFloat(importe),haber:0,categoriaGasto:catGasto,medioPago:medio,quien:quien},function(ok){
     if(ok){
-      var gasto = {fecha:fecha, mes:fecha.substring(0,7), importe:parseFloat(importe), categoria:catGasto, medio:medio, desc:desc, quien:quien, foto:fotoTicketData||null};
+      var gasto = {fecha:fecha, mes:fecha.substring(0,7), importe:parseFloat(importe), categoria:catGasto, medio:medio, desc:desc, quien:quien, foto:fotoTicketData||null, origen:"local"};
+      GASTOS_LOCAL.push(gasto);
       GASTOS_DIARIOS.push(gasto);
       try {
         guardarGastosDiarios();
@@ -1530,15 +1646,24 @@ function renderConfigList(filtro) {
     }
     html+='<button class="saldo-item" style="border-radius:10px;border:1px solid #F0F0EB;margin-bottom:6px" onclick=\'abrirEdicion("'+n.replace(/"/g,'&quot;')+'")\'>' +
       '<div style="flex:1;min-width:0"><div class="saldo-nombre">'+n+'</div>'+
-      '<div class="fact-sub">Plazo: '+p.plazo+' día'+(p.plazo!==1?"s":"")+'</div></div>'+
+      '<div class="fact-sub">'+(p.contraFactura?'⏳ A contra factura':'Plazo: '+p.plazo+' día'+(p.plazo!==1?"s":""))+'</div></div>'+
       '<div class="chevron">›</div></button>';
   });
   el.innerHTML=html;
 }
 
+function toggleContra(pref){
+  var chk=document.getElementById(pref+"-contra");
+  var plazo=document.getElementById(pref+"-plazo");
+  if(!chk||!plazo) return;
+  plazo.disabled = chk.checked;
+  plazo.style.opacity = chk.checked ? "0.4" : "1";
+}
+
 function agregarProveedor() {
   var nombre = document.getElementById("cfg-nombre").value.trim().toUpperCase();
   var cat = document.getElementById("cfg-cat").value;
+  var contra = document.getElementById("cfg-contra").checked;
   var plazo = parseInt(document.getElementById("cfg-plazo").value,10) || plazoPorDefecto(cat);
   var crearHoja = document.getElementById("cfg-crear-hoja").checked;
   var razon = document.getElementById("cfg-razon").value.trim();
@@ -1548,7 +1673,7 @@ function agregarProveedor() {
   if(!nombre){ showToast("Ingresá el nombre del proveedor","err"); return; }
   if(PROV_CONFIG[nombre]){ showToast("Ya existe un proveedor con ese nombre","err"); return; }
 
-  PROV_CONFIG[nombre] = { nombre:nombre, cat:cat, plazo:plazo, razon:razon, cuit:cuit, contacto:contacto, direccion:direccion };
+  PROV_CONFIG[nombre] = { nombre:nombre, cat:cat, plazo:plazo, contraFactura:contra, razon:razon, cuit:cuit, contacto:contacto, direccion:direccion };
   guardarConfig();
   filtrarProveedores();
   renderConfigList(document.getElementById("cfg-filtro").value);
@@ -1570,6 +1695,8 @@ function agregarProveedor() {
 
   document.getElementById("cfg-nombre").value="";
   document.getElementById("cfg-plazo").value="7";
+  document.getElementById("cfg-contra").checked=false;
+  toggleContra("cfg");
   document.getElementById("cfg-razon").value="";
   document.getElementById("cfg-cuit").value="";
   document.getElementById("cfg-contacto").value="";
@@ -1586,6 +1713,8 @@ function abrirEdicion(nombre) {
   document.getElementById("edit-nombre").value = nombre;
   document.getElementById("edit-cat").value = p.cat;
   document.getElementById("edit-plazo").value = p.plazo;
+  document.getElementById("edit-contra").checked = !!p.contraFactura;
+  toggleContra("edit");
   document.getElementById("edit-razon").value = p.razon || "";
   document.getElementById("edit-cuit").value = p.cuit || "";
   document.getElementById("edit-contacto").value = p.contacto || "";
@@ -1602,6 +1731,7 @@ function guardarEdicion() {
   if(!editandoProveedor) return;
   var nuevoNombre = document.getElementById("edit-nombre").value.trim().toUpperCase();
   var cat = document.getElementById("edit-cat").value;
+  var contra = document.getElementById("edit-contra").checked;
   var plazo = parseInt(document.getElementById("edit-plazo").value,10) || plazoPorDefecto(cat);
   var razon = document.getElementById("edit-razon").value.trim();
   var cuit = document.getElementById("edit-cuit").value.trim();
@@ -1612,7 +1742,7 @@ function guardarEdicion() {
 
   // Si cambió el nombre, borrar la entrada vieja
   if(nuevoNombre!==editandoProveedor){ delete PROV_CONFIG[editandoProveedor]; }
-  PROV_CONFIG[nuevoNombre] = { nombre:nuevoNombre, cat:cat, plazo:plazo, razon:razon, cuit:cuit, contacto:contacto, direccion:direccion };
+  PROV_CONFIG[nuevoNombre] = { nombre:nuevoNombre, cat:cat, plazo:plazo, contraFactura:contra, razon:razon, cuit:cuit, contacto:contacto, direccion:direccion };
   guardarConfig();
   filtrarProveedores();
   renderConfigList(document.getElementById("cfg-filtro").value);
