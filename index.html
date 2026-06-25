@@ -365,7 +365,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div id="form-fijo-resumen" class="card" style="display:none">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px">
         <div class="pago-section-title" style="margin:0">Resumen del mes</div>
-        <input type="month" id="cf-chart-mes" onchange="renderChartCostosFijos(this.value)" style="width:auto;font-size:13px;padding:6px 10px;border:1.5px solid #E5E5E0;border-radius:8px;font-family:inherit"/>
+        <input type="month" id="cf-chart-mes" onchange="cargarCostosFijos(this.value); renderChartCostosFijos(this.value)" style="width:auto;font-size:13px;padding:6px 10px;border:1.5px solid #E5E5E0;border-radius:8px;font-family:inherit"/>
       </div>
       <div id="cf-chart"></div>
     </div>
@@ -487,7 +487,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div id="tab-resumen" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:8px">
       <div style="font-weight:700;font-size:16px;color:#111">Resumen del mes</div>
-      <input type="month" id="res-mes" onchange="cargarComprasMes(this.value); renderResumen(this.value)" style="width:auto;font-size:13px;padding:7px 10px;border:1.5px solid #E5E5E0;border-radius:8px;font-family:inherit"/>
+      <input type="month" id="res-mes" onchange="cargarComprasMes(this.value); cargarCostosFijos(this.value); renderResumen(this.value)" style="width:auto;font-size:13px;padding:7px 10px;border:1.5px solid #E5E5E0;border-radius:8px;font-family:inherit"/>
     </div>
     <div id="res-contenido"></div>
     <p style="text-align:center;font-size:11px;color:#C4C4BB;margin-top:10px">Calculado con los movimientos y gastos cargados en la app.</p>
@@ -685,18 +685,58 @@ function guardarRubros() {
 const FIJO_PIN = "4290";
 var fijoDesbloqueado = false;
 const COSTOS_KEY = "rancheria_costos_fijos_v1";
-var COSTOS_FIJOS = [];   // [{desc, importe, mes:"YYYY-MM", rubro, fecha, medio}]
+var COSTOS_FIJOS = [];        // vista combinada (Drive + locales no sincronizados)
+var COSTOS_LOCAL = [];        // cargados desde la app (persistidos)
+var COSTOS_DRIVE = [];        // leídos de Drive (pestañas COSTOS FIJOS MM-YYYY)
 const RUBRO_COLORS = ["#2563EB","#16A34A","#DC2626","#D97706","#7C3AED","#0891B2","#DB2777","#65A30D","#9333EA","#EA580C","#0D9488","#CA8A04"];
 
 function inicializarCostosFijos() {
   try {
     var raw = localStorage.getItem(COSTOS_KEY);
-    if(raw){ var s = JSON.parse(raw); if(Array.isArray(s)) COSTOS_FIJOS = s; }
+    if(raw){ var s = JSON.parse(raw); if(Array.isArray(s)) COSTOS_LOCAL = s; }
   } catch(e){}
+  COSTOS_FIJOS = COSTOS_LOCAL.slice();
 }
 function guardarCostosFijos() {
-  try { localStorage.setItem(COSTOS_KEY, JSON.stringify(COSTOS_FIJOS)); } catch(e){}
+  try { localStorage.setItem(COSTOS_KEY, JSON.stringify(COSTOS_LOCAL)); } catch(e){}
 }
+function huellaCosto(c){
+  return (c.mes||"")+"|"+String(c.desc||c.concepto||"").toUpperCase().trim()+"|"+Math.round(Number(c.importe)||0);
+}
+function recomputarCostos(){
+  var h = {};
+  COSTOS_DRIVE.forEach(function(c){ h[huellaCosto(c)] = true; });
+  COSTOS_FIJOS = COSTOS_DRIVE.concat(COSTOS_LOCAL.filter(function(l){ return !h[huellaCosto(l)]; }));
+}
+// Lee los costos fijos del mes desde Drive (pestaña COSTOS FIJOS MM-YYYY)
+function cargarCostosFijos(mes){
+  if(!mes) mes = new Date().toISOString().substring(0,7);
+  var cb = "cbCostos_" + Date.now();
+  var s = document.createElement("script");
+  window[cb] = function(data){
+    delete window[cb];
+    if (s.parentNode) s.parentNode.removeChild(s);
+    if (data && data.ok && Array.isArray(data.costos)) {
+      // reemplazamos los de este mes en COSTOS_DRIVE
+      COSTOS_DRIVE = COSTOS_DRIVE.filter(function(c){ return c.mes !== mes; });
+      data.costos.forEach(function(c){
+        COSTOS_DRIVE.push({
+          desc: c.concepto || "", importe: Number(c.importe)||0, mes: mes,
+          rubro: c.rubro || "OTROS", fecha: "", medio: c.medio || "", origen: "drive"
+        });
+      });
+      recomputarCostos();
+      if(typeof renderResumen==="function" && document.getElementById("res-mes"))
+        renderResumen(document.getElementById("res-mes").value || mes);
+      if(typeof renderChartCostosFijos==="function" && document.getElementById("res-mes"))
+        renderChartCostosFijos(document.getElementById("res-mes").value || mes);
+    }
+  };
+  s.src = SCRIPT_URL + "?action=costosFijos&mes=" + encodeURIComponent(mes) + "&callback=" + cb;
+  s.onerror = function(){ delete window[cb]; if(s.parentNode) s.parentNode.removeChild(s); };
+  document.body.appendChild(s);
+}
+
 
 // ── Movimientos cargados desde la app (se acumulan para el cierre) ──
 const MOVS_KEY = "rancheria_movs_app_v1";
@@ -713,9 +753,10 @@ function guardarMovsApp() {
 function sincronizarDesdeDrive() {
   if(!confirm("Esto borra los movimientos y gastos guardados en este teléfono y vuelve a leer todo desde Drive.\n\nNo modifica nada en tus planillas de Drive.\n\n¿Continuar?")) return;
   try {
-    // Borrar lo local (movimientos y gastos cargados/de prueba en este navegador)
+    // Borrar lo local (movimientos, gastos y costos cargados/de prueba en este navegador)
     localStorage.removeItem(MOVS_KEY);
     localStorage.removeItem(GD_KEY);
+    localStorage.removeItem(COSTOS_KEY);
   } catch(e){}
   // Vaciar en memoria
   MOVS_APP = [];
@@ -723,12 +764,20 @@ function sincronizarDesdeDrive() {
   GASTOS_LOCAL = [];
   GASTOS_DRIVE = [];
   GASTOS_DIARIOS = [];
+  COSTOS_LOCAL = [];
+  COSTOS_DRIVE = [];
+  COSTOS_FIJOS = [];
   SALDOS_DATA = [];
   SALDOS_LIVE = {};
   SALDOS_LIVE_VENC = {};
+  PENDIENTES_DRIVE = {};
+  COMPRAS_MES = {};
   // Volver a leer todo desde Drive
+  var mesActual = new Date().toISOString().substring(0,7);
   try { cargarSaldosDrive(); } catch(e){}
   try { cargarGastosDrive(); } catch(e){}
+  try { cargarComprasMes(mesActual); } catch(e){}
+  try { cargarCostosFijos(mesActual); } catch(e){}
   showToast("🔄 Sincronizado. La app ahora refleja Drive.","ok");
 }
 
@@ -813,6 +862,7 @@ var modo = "cc";
 var facturasSeleccionadas = {};
 var SALDOS_LIVE = {};   // saldos reales leídos del Sheet: { "PROVEEDOR": saldo }
 var SALDOS_LIVE_VENC = {};  // vencido real por proveedor: { "PROVEEDOR": vencido }
+var PENDIENTES_DRIVE = {};  // facturas pendientes por proveedor (de Drive): { "PROVEEDOR": [ {fila,factura,fecha,vence,importe,vencida} ] }
 var saldosCargando = false;
 
 // ── Init ─────────────────────────────────────────────────────
@@ -841,6 +891,7 @@ document.addEventListener("DOMContentLoaded", function(){
   paso(cargarSaldosDrive);
   paso(cargarGastosDrive);
   paso(function(){ cargarComprasMes(new Date().toISOString().substring(0,7)); });
+  paso(function(){ cargarCostosFijos(new Date().toISOString().substring(0,7)); });
 });
 
 // ── Leer saldos reales desde Drive (JSONP) ────────────────────
@@ -865,6 +916,7 @@ function cargarSaldosDrive() {
         driveNombres[nombre] = true;
         SALDOS_LIVE[nombre] = saldoNum;
         SALDOS_LIVE_VENC[nombre] = vencNum;
+        PENDIENTES_DRIVE[nombre] = Array.isArray(item.pendientes) ? item.pendientes : [];
         if (!PROV_CONFIG[nombre]) {
           PROV_CONFIG[nombre] = { nombre:nombre, cat:cat, plazo:plazoPorDefecto(cat) };
         }
@@ -1063,8 +1115,17 @@ function onImporteChange() {
 
 // ── Selector de facturas para pago ────────────────────────────
 function getFacturasPendientes(proveedor) {
-  return MOVIMIENTOS.filter(function(m){
-    return m.proveedor===proveedor && m.debe>0 && !m.pagada;
+  var lista = PENDIENTES_DRIVE[(proveedor||"").toUpperCase().trim()] || [];
+  // normalizamos al formato que usa el selector: id = número de fila en la hoja
+  return lista.map(function(p){
+    return {
+      id: String(p.fila),
+      ref: p.factura || "",
+      fecha: p.fecha || "",
+      venc: p.vence || null,
+      debe: Number(p.importe) || 0,
+      vencida: !!p.vencida
+    };
   });
 }
 
@@ -1470,10 +1531,12 @@ function submitCC() {
   var esDebe=tipo==="debe";
   var contraF=esContraFactura(prov);
 
-  // Armar descripción con refs de facturas seleccionadas
-  var refsSelec=Object.keys(facturasSeleccionadas).map(function(id){
-    var m=MOVIMIENTOS.find(function(x){return x.id===id;});
-    return m&&m.ref?m.ref:null;
+  // Filas seleccionadas (claves = número de fila en la hoja) y sus refs para la descripción
+  var filasSelec = Object.keys(facturasSeleccionadas);
+  var pendProv = PENDIENTES_DRIVE[(prov||"").toUpperCase().trim()] || [];
+  var refsSelec = filasSelec.map(function(fila){
+    var p = pendProv.find(function(x){return String(x.fila)===String(fila);});
+    return p && p.factura ? p.factura : null;
   }).filter(Boolean);
   var descFinal=esDebe?(obs||"PEDIDO"):"PAGO POR "+medio.toUpperCase()+(refsSelec.length?" ("+refsSelec.join(", ")+")":"");
 
@@ -1484,11 +1547,11 @@ function submitCC() {
     haber:!esDebe?parseFloat(importe):0,
     medioPago:medio,
     contraFactura: contraF,
-    // Facturas a marcar como PAGADAS en la hoja (solo en pagos con facturas seleccionadas)
-    marcarPagadas: (!esDebe && refsSelec.length) ? refsSelec : []
+    // Filas a tildar como PAGADAS en la hoja (solo en pagos con facturas seleccionadas)
+    marcarFilas: (!esDebe && filasSelec.length) ? filasSelec : []
   };
 
-  var idsSeleccionados = Object.keys(facturasSeleccionadas);
+  var idsSeleccionados = filasSelec;
 
   enviar(payload,function(ok,hoja){
     if(ok){
@@ -1512,16 +1575,9 @@ function submitCC() {
         });
         guardarMovsApp();
       }
-      // Marcar las facturas pagadas en el estado local (para que no figuren más como vencidas)
-      if(!esDebe && idsSeleccionados.length){
-        idsSeleccionados.forEach(function(id){
-          var m=MOVIMIENTOS.find(function(x){return x.id===id;});
-          if(m) m.pagada=true;
-          var ma=MOVS_APP.find(function(x){return x.id===id;});
-          if(ma) ma.pagada=true;
-        });
-        guardarMovsApp();
-      }
+      // Refrescar desde Drive para reflejar el tilde, el vencido recalculado y el saldo (F7).
+      // El Sheet tarda un instante en procesar la escritura, por eso esperamos un poco.
+      setTimeout(function(){ try{ cargarSaldosDrive(); }catch(e){} }, 2500);
       renderPorProveedor(); renderVencidas(); renderTodos();
       showToast("✅ "+prov+" guardado en Drive","ok");
       document.getElementById("cc-importe").value="";
@@ -1610,8 +1666,10 @@ function submitCostoFijo() {
   if(!desc||!importe||!fecha){showToast("Completá concepto, importe y fecha de pago","err");return;}
   enviar({modo:"fijo",fecha:fecha,descripcion:desc,debe:parseFloat(importe),haber:0,mes:mes,rubro:rubro,medioPago:medio},function(ok){
     if(ok){
-      COSTOS_FIJOS.push({desc:desc,importe:parseFloat(importe),mes:mes,rubro:rubro,fecha:fecha,medio:medio});
+      var nuevoCosto={desc:desc,importe:parseFloat(importe),mes:mes,rubro:rubro,fecha:fecha,medio:medio,origen:"local"};
+      COSTOS_LOCAL.push(nuevoCosto);
       guardarCostosFijos();
+      recomputarCostos();
       renderChartCostosFijos(document.getElementById("cf-chart-mes").value);
       showToast("✅ Costo fijo guardado en Drive","ok");
       document.getElementById("fj-desc").value="";
