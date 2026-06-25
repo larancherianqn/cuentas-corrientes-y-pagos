@@ -475,6 +475,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
       <div id="rubros-list"></div>
     </div>
+
+    <div class="card">
+      <div class="pago-section-title" style="margin-bottom:4px">Sincronización</div>
+      <p style="font-size:12px;color:#9CA3AF;margin-bottom:12px">Borra los movimientos y gastos guardados en este teléfono y vuelve a leer todo desde Drive. Usalo si los números de la app no coinciden con las planillas. No toca nada en Drive.</p>
+      <button class="btn-submit" style="background:#B91C1C" onclick="sincronizarDesdeDrive()">🔄 Sincronizar desde Drive (borrar local)</button>
+    </div>
   </div>
 
   <!-- ══ RESUMEN MENSUAL ═════════════════════════════════════════ -->
@@ -704,6 +710,27 @@ function inicializarMovsApp() {
 function guardarMovsApp() {
   try { localStorage.setItem(MOVS_KEY, JSON.stringify(MOVS_APP)); } catch(e){}
 }
+function sincronizarDesdeDrive() {
+  if(!confirm("Esto borra los movimientos y gastos guardados en este teléfono y vuelve a leer todo desde Drive.\n\nNo modifica nada en tus planillas de Drive.\n\n¿Continuar?")) return;
+  try {
+    // Borrar lo local (movimientos y gastos cargados/de prueba en este navegador)
+    localStorage.removeItem(MOVS_KEY);
+    localStorage.removeItem(GD_KEY);
+  } catch(e){}
+  // Vaciar en memoria
+  MOVS_APP = [];
+  MOVIMIENTOS = [];
+  GASTOS_LOCAL = [];
+  GASTOS_DRIVE = [];
+  GASTOS_DIARIOS = [];
+  SALDOS_DATA = [];
+  SALDOS_LIVE = {};
+  SALDOS_LIVE_VENC = {};
+  // Volver a leer todo desde Drive
+  try { cargarSaldosDrive(); } catch(e){}
+  try { cargarGastosDrive(); } catch(e){}
+  showToast("🔄 Sincronizado. La app ahora refleja Drive.","ok");
+}
 
 // ── Gastos diarios (para el resumen mensual) ──────────────────
 const GD_KEY = "rancheria_gastos_diarios_v1";
@@ -776,47 +803,7 @@ function refrescarSelectRubros() {
 
 // Movimientos de los últimos 3 meses (datos reales + sesión actual)
 // Cada movimiento: {id, proveedor, cat, fecha, fechaObj, desc, ref, debe, haber, vencObj}
-var MOVIMIENTOS = [
-  // FORMAGGIO
-  {id:"f1",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-04-08",desc:"PEDIDO",ref:"R2-3646",debe:806524,haber:0,venc:"2026-04-15"},
-  {id:"f2",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-04",desc:"PAGO MP",ref:"",debe:0,haber:1116192,venc:null},
-  {id:"f3",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-04",desc:"PEDIDO",ref:"R2-3704",debe:149335,haber:0,venc:"2026-05-11"},
-  {id:"f4",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-08",desc:"PEDIDO",ref:"R2-3791",debe:616106,haber:0,venc:"2026-05-15"},
-  {id:"f5",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-13",desc:"PEDIDO",ref:"R2-3905",debe:606345,haber:0,venc:"2026-05-20"},
-  {id:"f6",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-14",desc:"PEDIDO",ref:"R2-3913",debe:97293,haber:0,venc:"2026-05-21"},
-  {id:"f7",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-19",desc:"PAGO MP",ref:"",debe:0,haber:2109540,venc:null},
-  {id:"f8",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-22",desc:"PEDIDO",ref:"R2-4022",debe:397646,haber:0,venc:"2026-05-29"},
-  {id:"f9",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-22",desc:"PEDIDO",ref:"R2-4125",debe:474000,haber:0,venc:"2026-05-29"},
-  {id:"f10",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-22",desc:"PEDIDO",ref:"R2-4085",debe:293650,haber:0,venc:"2026-05-29"},
-  {id:"f11",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-27",desc:"PEDIDO",ref:"R2-4189",debe:427063,haber:0,venc:"2026-06-03"},
-  {id:"f12",proveedor:"FORMAGGIO",cat:"cocina",fecha:"2026-05-29",desc:"PEDIDO",ref:"R2-4239",debe:682356,haber:0,venc:"2026-06-05"},
-  // TINA
-  {id:"t1",proveedor:"TINA",cat:"cocina",fecha:"2026-05-06",desc:"PEDIDO",ref:"7-1067",debe:248417,haber:0,venc:"2026-05-13"},
-  {id:"t2",proveedor:"TINA",cat:"cocina",fecha:"2026-05-23",desc:"PEDIDO",ref:"7-1101",debe:217221,haber:0,venc:"2026-05-30"},
-  {id:"t3",proveedor:"TINA",cat:"cocina",fecha:"2026-06-01",desc:"PEDIDO",ref:"7-1113",debe:443277,haber:0,venc:"2026-06-08"},
-  {id:"t4",proveedor:"TINA",cat:"cocina",fecha:"2026-06-04",desc:"PAGO MP",ref:"",debe:0,haber:696559,venc:null},
-  // GROWLER
-  {id:"g1",proveedor:"GROWLER",cat:"bebidas",fecha:"2026-05-05",desc:"PEDIDO",ref:"R-05052026-1",debe:318096,haber:0,venc:"2026-05-12"},
-  {id:"g2",proveedor:"GROWLER",cat:"bebidas",fecha:"2026-05-13",desc:"PAGO EFECTIVO",ref:"",debe:0,haber:186700,venc:null},
-  {id:"g3",proveedor:"GROWLER",cat:"bebidas",fecha:"2026-05-27",desc:"PEDIDO",ref:"R-27052026-1",debe:187812,haber:0,venc:"2026-06-03"},
-  {id:"g4",proveedor:"GROWLER",cat:"bebidas",fecha:"2026-05-27",desc:"PAGO EFECTIVO",ref:"",debe:0,haber:217800,venc:null},
-  // CABRONA
-  {id:"c1",proveedor:"CABRONA",cat:"bebidas",fecha:"2026-04-15",desc:"PEDIDO",ref:"FC-99-00000029",debe:240000,haber:0,venc:"2026-04-22"},
-  {id:"c2",proveedor:"CABRONA",cat:"bebidas",fecha:"2026-05-02",desc:"PEDIDO",ref:"",debe:240000,haber:0,venc:"2026-05-09"},
-  {id:"c3",proveedor:"CABRONA",cat:"bebidas",fecha:"2026-05-06",desc:"PAGO MP",ref:"",debe:0,haber:444999,venc:null},
-  {id:"c4",proveedor:"CABRONA",cat:"bebidas",fecha:"2026-05-20",desc:"PEDIDO",ref:"",debe:350000,haber:0,venc:"2026-05-27"},
-  {id:"c5",proveedor:"CABRONA",cat:"bebidas",fecha:"2026-06-03",desc:"PEDIDO",ref:"",debe:400000,haber:0,venc:"2026-06-10"},
-  // EMMA SRL
-  {id:"e1",proveedor:"EMMA SRL",cat:"cocina",fecha:"2026-05-22",desc:"PEDIDO",ref:"2-5236",debe:155574,haber:0,venc:"2026-05-29"},
-  {id:"e2",proveedor:"EMMA SRL",cat:"cocina",fecha:"2026-05-26",desc:"PEDIDO",ref:"2-5251",debe:133009,haber:0,venc:"2026-06-02"},
-  {id:"e3",proveedor:"EMMA SRL",cat:"cocina",fecha:"2026-06-02",desc:"PEDIDO",ref:"2-5281",debe:65120,haber:0,venc:"2026-06-09"},
-  {id:"e4",proveedor:"EMMA SRL",cat:"cocina",fecha:"2026-06-04",desc:"PAGO MP",ref:"",debe:0,haber:392629,venc:null},
-  // PGC
-  {id:"p1",proveedor:"PGC",cat:"gastos",fecha:"2026-05-06",desc:"PEDIDO",ref:"15587",debe:154800,haber:0,venc:"2026-05-13"},
-  {id:"p2",proveedor:"PGC",cat:"gastos",fecha:"2026-05-13",desc:"PEDIDO",ref:"15743",debe:121800,haber:0,venc:"2026-05-20"},
-  {id:"p3",proveedor:"PGC",cat:"gastos",fecha:"2026-05-20",desc:"PAGO MP",ref:"",debe:0,haber:517600,venc:null},
-  {id:"p4",proveedor:"PGC",cat:"gastos",fecha:"2026-05-23",desc:"PEDIDO",ref:"7-1361",debe:75000,haber:0,venc:"2026-05-30"},
-];
+var MOVIMIENTOS = [];  // se llena desde Drive y desde lo que cargás en la app
 
 var SALDOS_DATA = [];  // se llena automáticamente con los saldos reales de Drive
 
