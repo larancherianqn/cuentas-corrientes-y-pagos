@@ -487,7 +487,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div id="tab-resumen" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:8px">
       <div style="font-weight:700;font-size:16px;color:#111">Resumen del mes</div>
-      <input type="month" id="res-mes" onchange="renderResumen(this.value)" style="width:auto;font-size:13px;padding:7px 10px;border:1.5px solid #E5E5E0;border-radius:8px;font-family:inherit"/>
+      <input type="month" id="res-mes" onchange="cargarComprasMes(this.value); renderResumen(this.value)" style="width:auto;font-size:13px;padding:7px 10px;border:1.5px solid #E5E5E0;border-radius:8px;font-family:inherit"/>
     </div>
     <div id="res-contenido"></div>
     <p style="text-align:center;font-size:11px;color:#C4C4BB;margin-top:10px">Calculado con los movimientos y gastos cargados en la app.</p>
@@ -840,6 +840,7 @@ document.addEventListener("DOMContentLoaded", function(){
   paso(function(){ renderConfigList(""); });
   paso(cargarSaldosDrive);
   paso(cargarGastosDrive);
+  paso(function(){ cargarComprasMes(new Date().toISOString().substring(0,7)); });
 });
 
 // ── Leer saldos reales desde Drive (JSONP) ────────────────────
@@ -899,6 +900,32 @@ function cargarSaldosDrive() {
     saldosCargando = false;
     actualizarBannerSaldos();
   };
+  document.body.appendChild(s);
+}
+
+// Compras del mes por proveedor (DEBE de los PEDIDOS de ese mes), leídas de Drive.
+// COMPRAS_MES = { "YYYY-MM": { "PROVEEDOR": {compras, cat} } }
+var COMPRAS_MES = {};
+function cargarComprasMes(mes) {
+  if(!mes) mes = new Date().toISOString().substring(0,7);
+  var cb = "cbCompras_" + Date.now();
+  var s = document.createElement("script");
+  window[cb] = function(data){
+    delete window[cb];
+    if (s.parentNode) s.parentNode.removeChild(s);
+    if (data && data.ok && Array.isArray(data.compras)) {
+      var mapa = {};
+      data.compras.forEach(function(item){
+        var nombre = String(item.proveedor||"").toUpperCase().trim();
+        mapa[nombre] = { compras: Number(item.compras)||0, cat: item.cat||"gastos" };
+      });
+      COMPRAS_MES[mes] = mapa;
+      if(typeof renderResumen==="function" && document.getElementById("res-mes"))
+        renderResumen(document.getElementById("res-mes").value || mes);
+    }
+  };
+  s.src = SCRIPT_URL + "?action=comprasMes&mes=" + encodeURIComponent(mes) + "&callback=" + cb;
+  s.onerror = function(){ delete window[cb]; if(s.parentNode) s.parentNode.removeChild(s); };
   document.body.appendChild(s);
 }
 
@@ -1925,15 +1952,22 @@ function renderResumen(mes) {
   if(!mes) mes = new Date().toISOString().substring(0,7);
 
   // --- CMV: compras CC cocina + bebidas + PGC + NEUCOR + Gastos Diarios "COSTOS VARIABLES"
+  //     Las compras de cuenta corriente salen de Drive (getComprasMes), no de lo local.
   var cmvCocina=0, cmvBebidas=0, cmvPgcNeucor=0;
-  MOVIMIENTOS.forEach(function(m){
-    if(!m.fecha || m.fecha.substring(0,7)!==mes) return;
-    var compra = m.debe||0;
-    if(compra<=0) return;
-    if(m.cat==="cocina") cmvCocina += compra;
-    else if(m.cat==="bebidas") cmvBebidas += compra;
-    else if(m.cat==="gastos" && (m.proveedor==="PGC" || m.proveedor==="NEUCOR")) cmvPgcNeucor += compra;
-  });
+  var comprasMes = COMPRAS_MES[mes];
+  if(!comprasMes){
+    // todavía no llegaron de Drive: las pedimos y mostramos lo que haya
+    cargarComprasMes(mes);
+  } else {
+    Object.keys(comprasMes).forEach(function(nombre){
+      var info = comprasMes[nombre];
+      var compra = info.compras||0;
+      if(compra<=0) return;
+      if(info.cat==="cocina") cmvCocina += compra;
+      else if(info.cat==="bebidas") cmvBebidas += compra;
+      else if(info.cat==="gastos" && (nombre==="PGC" || nombre==="NEUCOR")) cmvPgcNeucor += compra;
+    });
+  }
   var cmvCostVar = 0;
   GASTOS_DIARIOS.forEach(function(g){
     if(g.mes===mes && g.categoria==="COSTOS VARIABLES") cmvCostVar += (g.importe||0);
