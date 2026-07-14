@@ -920,7 +920,7 @@ function cargarSaldosDrive() {
         SALDOS_LIVE_VENC[nombre] = vencNum;
         PENDIENTES_DRIVE[nombre] = Array.isArray(item.pendientes) ? item.pendientes : [];
         (Array.isArray(item.movimientos) ? item.movimientos : []).forEach(function(mv){
-          MOVIMIENTOS_DRIVE.push({proveedor:nombre,cat:cat,fecha:mv.fecha,concepto:mv.concepto,factura:mv.factura,venc:mv.vence,debe:Number(mv.debe)||0,haber:Number(mv.haber)||0,pagada:!!mv.pagada,vencida:!!mv.vencida});
+          MOVIMIENTOS_DRIVE.push({proveedor:nombre,cat:cat,fecha:mv.fecha,desc:mv.concepto,ref:mv.factura,concepto:mv.concepto,factura:mv.factura,venc:mv.vence,debe:Number(mv.debe)||0,haber:Number(mv.haber)||0,pagada:!!mv.pagada,vencida:!!mv.vencida});
         });
         if (!PROV_CONFIG[nombre]) {
           PROV_CONFIG[nombre] = { nombre:nombre, cat:cat, plazo:plazoPorDefecto(cat) };
