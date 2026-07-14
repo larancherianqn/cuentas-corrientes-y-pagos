@@ -862,7 +862,8 @@ var modo = "cc";
 var facturasSeleccionadas = {};
 var SALDOS_LIVE = {};   // saldos reales leídos del Sheet: { "PROVEEDOR": saldo }
 var SALDOS_LIVE_VENC = {};  // vencido real por proveedor: { "PROVEEDOR": vencido }
-var PENDIENTES_DRIVE = {};  // facturas pendientes por proveedor (de Drive): { "PROVEEDOR": [ {fila,factura,fecha,vence,importe,vencida} ] }
+var PENDIENTES_DRIVE = {};
+  var MOVIMIENTOS_DRIVE = [];  // facturas pendientes por proveedor (de Drive): { "PROVEEDOR": [ {fila,factura,fecha,vence,importe,vencida} ] }
 var saldosCargando = false;
 
 // ── Init ─────────────────────────────────────────────────────
@@ -906,6 +907,7 @@ function cargarSaldosDrive() {
     saldosCargando = false;
     if (data && data.ok && data.saldos) {
       var driveNombres = {};
+      MOVIMIENTOS_DRIVE = [];
       data.saldos.forEach(function(item){
         var nombre = item.proveedor.toUpperCase().trim();
         var cat = item.cat || "gastos";
@@ -917,6 +919,9 @@ function cargarSaldosDrive() {
         SALDOS_LIVE[nombre] = saldoNum;
         SALDOS_LIVE_VENC[nombre] = vencNum;
         PENDIENTES_DRIVE[nombre] = Array.isArray(item.pendientes) ? item.pendientes : [];
+        (Array.isArray(item.movimientos) ? item.movimientos : []).forEach(function(mv){
+          MOVIMIENTOS_DRIVE.push({proveedor:nombre,cat:cat,fecha:mv.fecha,concepto:mv.concepto,factura:mv.factura,venc:mv.vence,debe:Number(mv.debe)||0,haber:Number(mv.haber)||0,pagada:!!mv.pagada,vencida:!!mv.vencida});
+        });
         if (!PROV_CONFIG[nombre]) {
           PROV_CONFIG[nombre] = { nombre:nombre, cat:cat, plazo:plazoPorDefecto(cat) };
         }
@@ -1251,7 +1256,7 @@ function calcularPorProveedor() {
   SALDOS_DATA.forEach(function(sd){
     if(!map[sd.nombre]) map[sd.nombre]={nombre:sd.nombre,cat:sd.cat,total:0,vencido:0,items:[],calc:0,oldestVenc:null};
   });
-  MOVIMIENTOS.forEach(function(m){
+  MOVIMIENTOS_DRIVE.concat(MOVIMIENTOS).forEach(function(m){
     if(!map[m.proveedor]) map[m.proveedor]={nombre:m.proveedor,cat:m.cat,total:0,vencido:0,items:[],calc:0,oldestVenc:null};
     var g = map[m.proveedor];
     g.calc += (m.debe - m.haber);
@@ -1364,7 +1369,7 @@ function openProvDetail(nombre) {
 // ── Movimientos vencidos ──────────────────────────────────────
 function renderVencidas() {
   var hoy = new Date();
-  var vencidas = MOVIMIENTOS.filter(function(m){
+  var vencidas = MOVIMIENTOS_DRIVE.concat(MOVIMIENTOS).filter(function(m){
     return m.debe>0 && m.venc && new Date(m.venc)<hoy && !m.pagada;
   }).sort(function(a,b){return new Date(a.venc)-new Date(b.venc);});
 
@@ -1409,7 +1414,7 @@ function renderVencidas() {
 function renderTodos() {
   var hoy = new Date();
   var hace3 = new Date(hoy); hace3.setMonth(hace3.getMonth()-3);
-  var lista = MOVIMIENTOS.filter(function(m){
+  var lista = MOVIMIENTOS_DRIVE.concat(MOVIMIENTOS).filter(function(m){
     return new Date(m.fecha)>=hace3;
   }).sort(function(a,b){return new Date(b.fecha)-new Date(a.fecha);});
 
