@@ -947,6 +947,8 @@ function cargarSaldosDrive() {
       filtrarProveedores();
       renderSaldos(document.getElementById("filtro-cat") ? document.getElementById("filtro-cat").value : "");
       renderPorProveedor();
+      renderVencidas();
+      renderTodos();
       if(typeof renderConfigList==="function" && document.getElementById("cfg-filtro")) renderConfigList(document.getElementById("cfg-filtro").value);
     }
     actualizarBannerSaldos();
