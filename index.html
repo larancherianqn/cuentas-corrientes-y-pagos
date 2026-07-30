@@ -1355,6 +1355,7 @@ function getFacturasPendientes(proveedor) {
     return {
       id: String(p.fila),
       ref: p.factura || "",
+      desc: p.concepto || "",
       fecha: p.fecha || "",
       venc: p.vence || null,
       debe: Number(p.importe) || 0,
