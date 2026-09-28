@@ -1133,6 +1133,7 @@ document.addEventListener("DOMContentLoaded", function(){
   paso(renderTodos);
   paso(function(){ renderConfigList(""); });
   paso(cargarSaldosDrive);
+  paso(procesarCola);
   paso(cargarGastosDrive);
   paso(function(){ cargarComprasMes(new Date().toISOString().substring(0,7)); });
   paso(function(){ cargarCostosFijos(new Date().toISOString().substring(0,7)); });
@@ -1141,6 +1142,7 @@ document.addEventListener("DOMContentLoaded", function(){
 // ── Leer saldos reales desde Drive (JSONP) ────────────────────
 function cargarSaldosDrive() {
   saldosCargando = true;
+  var inicioCarga = Date.now();
   actualizarBannerSaldos();
   var cbName = "jsonpSaldos_" + Date.now();
   var s = document.createElement("script");
@@ -1193,6 +1195,10 @@ function cargarSaldosDrive() {
       renderVencidas();
       renderTodos();
       if(typeof renderConfigList==="function" && document.getElementById("cfg-filtro")) renderConfigList(document.getElementById("cfg-filtro").value);
+      // Lo que se cargó mientras leíamos todo puede haber quedado viejo: refrescar esos proveedores
+      Object.keys(ULTIMO_ENVIO).forEach(function(n){
+        if (ULTIMO_ENVIO[n] > inicioCarga) { var it = SALDOS_DATA.find(function(x){return x.nombre===n;}); refrescarProveedor(n, it ? it.cat : ""); }
+      });
     }
     actualizarBannerSaldos();
   };
@@ -1234,7 +1240,12 @@ function cargarComprasMes(mes) {
 function actualizarBannerSaldos() {
   var sync = document.querySelector(".sync");
   if (!sync) return;
-  if (saldosCargando) {
+  var nCola = (typeof COLA!=="undefined") ? COLA.length : 0;
+  if (nCola) {
+    sync.innerHTML = '<div class="sync-dot" style="background:#F59E0B"></div>Enviando '+nCola+'…';
+  } else if (typeof refrescandoN!=="undefined" && refrescandoN > 0) {
+    sync.innerHTML = '<div class="sync-dot" style="background:#F59E0B"></div>Actualizando…';
+  } else if (saldosCargando) {
     sync.innerHTML = '<div class="sync-dot" style="background:#F59E0B"></div>Leyendo saldos…';
   } else {
     sync.innerHTML = '<div class="sync-dot"></div>Drive';
@@ -1353,11 +1364,14 @@ function setTipo(t) {
 function filtrarProveedores() {
   var cat = document.getElementById("cc-cat").value;
   var sel = document.getElementById("cc-prov");
+  var previo = sel.value;
   sel.innerHTML = "";
   getProveedores(cat).forEach(function(p){
     var o = document.createElement("option");
     o.value=p; o.textContent=p; sel.appendChild(o);
   });
+  // no cambiar el proveedor elegido si sigue en la lista
+  if (previo && getProveedores(cat).indexOf(previo) !== -1) sel.value = previo;
   if(tipo==="haber") renderFacturasSelector();
   calcularVencimiento();
 }
@@ -1858,9 +1872,9 @@ function submitCC() {
       }
       // Refrescar desde Drive para reflejar el tilde, el vencido recalculado y el saldo (F7).
       // El Sheet tarda un instante en procesar la escritura, por eso esperamos un poco.
-      setTimeout(function(){ try{ cargarSaldosDrive(); }catch(e){} }, 2500);
+      // El refresco de ESTE proveedor se hace solo cuando termina de enviarse la cola (ver procesarCola)
       renderPorProveedor(); renderVencidas(); renderTodos();
-      showToast("✅ "+prov+" guardado en Drive","ok");
+      showToast("✅ "+prov+" guardado","ok");
       document.getElementById("cc-importe").value="";
       document.getElementById("cc-remito").value="";
       document.getElementById("cc-venc").value="";
@@ -1952,7 +1966,7 @@ function submitCostoFijo() {
       guardarCostosFijos();
       recomputarCostos();
       renderChartCostosFijos(document.getElementById("cf-chart-mes").value);
-      showToast("✅ Costo fijo guardado en Drive","ok");
+      showToast("✅ Costo fijo guardado","ok");
       document.getElementById("fj-desc").value="";
       document.getElementById("fj-importe").value="";
     }
@@ -1960,19 +1974,110 @@ function submitCostoFijo() {
 }
 
 // ── Enviar ─────────────────────────────────────────────────────
+// ── Cola de envíos: guarda al instante y manda a Drive de fondo, en orden ──
+var COLA_KEY = "rancheria_cola_v1";
+var COLA = [];
+try { COLA = JSON.parse(localStorage.getItem(COLA_KEY) || "[]") || []; } catch(e){ COLA = []; }
+var colaEnviando = false;
+function guardarCola(){ try { localStorage.setItem(COLA_KEY, JSON.stringify(COLA)); } catch(e){} }
+function catDeLabel(l){ return l==="COCINA CC" ? "cocina" : l==="BEBIDAS CC" ? "bebidas" : "gastos"; }
+
 function enviar(payload, cb) {
   var btnId = modo==="cc" ? "btn-submit-cc" : modo==="facturas" ? "btn-submit-f" : "btn-submit-fj";
-  var btn=document.getElementById(btnId);
-  var textoOriginal = btn.textContent;
-  btn.disabled=true; btn.textContent="Guardando...";
-  function restaurar(){
-    btn.disabled=false;
-    if(modo==="cc"){ setTipo(tipo); }
-    else { btn.textContent=textoOriginal; }
-  }
-  fetch(SCRIPT_URL,{method:"POST",mode:"no-cors",body:JSON.stringify(payload)})
-    .then(function(){ restaurar(); cb(true,"Drive"); })
-    .catch(function(err){ restaurar(); showToast("Error de red: "+err.message,"err"); cb(false); });
+  var btn = document.getElementById(btnId);
+  // bloqueo cortito solo para evitar doble toque
+  if (btn) { btn.disabled = true; setTimeout(function(){ btn.disabled = false; }, 700); }
+  COLA.push({ id: Date.now()+"_"+Math.random().toString(36).slice(2,7), payload: payload });
+  guardarCola();
+  actualizarBannerSaldos();
+  procesarCola();
+  cb(true, "Drive");
+}
+
+function procesarCola() {
+  if (colaEnviando || !COLA.length) return;
+  colaEnviando = true;
+  actualizarBannerSaldos();
+  var item = COLA[0];
+  fetch(SCRIPT_URL, { method:"POST", mode:"no-cors", body: JSON.stringify(item.payload) })
+    .then(function(){
+      COLA.shift(); guardarCola();
+      colaEnviando = false;
+      if (item.payload && item.payload.modo === "cc")
+        marcarParaRefrescar(item.payload.proveedor, catDeLabel(item.payload.categoria));
+      if (COLA.length) procesarCola();
+      else { actualizarBannerSaldos(); programarRefresco(); }
+    })
+    .catch(function(){
+      // sin conexión: queda en la cola y se reintenta
+      colaEnviando = false;
+      actualizarBannerSaldos();
+      setTimeout(procesarCola, 8000);
+    });
+}
+window.addEventListener("online", function(){ procesarCola(); });
+
+// ── Refresco rápido: solo los proveedores tocados, una vez que terminó la cola ──
+var PEND_REFRESCO = {};      // nombre -> cat
+var ULTIMO_ENVIO = {};       // nombre -> timestamp
+var timerRefresco = null;
+var refrescandoN = 0;
+function marcarParaRefrescar(prov, cat) {
+  var n = String(prov||"").toUpperCase().trim();
+  if (!n) return;
+  PEND_REFRESCO[n] = cat || "";
+  ULTIMO_ENVIO[n] = Date.now();
+}
+function programarRefresco() {
+  clearTimeout(timerRefresco);
+  timerRefresco = setTimeout(function(){
+    if (COLA.length) return;           // si siguen entrando cargas, espera a la próxima
+    var p = PEND_REFRESCO; PEND_REFRESCO = {};
+    Object.keys(p).forEach(function(n){ refrescarProveedor(n, p[n]); });
+  }, 2500);
+}
+
+function aplicarItemSaldo(item) {
+  var nombre = String(item.proveedor||"").toUpperCase().trim();
+  if (!nombre) return;
+  var cat = item.cat || "gastos";
+  var saldoNum = Number(item.saldo) || 0;
+  var vencNum = Number(item.vencido) || 0;
+  if (Math.abs(saldoNum) < 1) saldoNum = 0;
+  if (vencNum < 1) vencNum = 0;
+  SALDOS_LIVE[nombre] = saldoNum;
+  SALDOS_LIVE_VENC[nombre] = vencNum;
+  PENDIENTES_DRIVE[nombre] = Array.isArray(item.pendientes) ? item.pendientes : [];
+  MOVIMIENTOS_DRIVE = MOVIMIENTOS_DRIVE.filter(function(m){ return m.proveedor !== nombre; });
+  (Array.isArray(item.movimientos) ? item.movimientos : []).forEach(function(mv){
+    MOVIMIENTOS_DRIVE.push({proveedor:nombre,cat:cat,fecha:mv.fecha,desc:mv.concepto,ref:mv.factura,concepto:mv.concepto,factura:mv.factura,venc:mv.vence,debe:Number(mv.debe)||0,haber:Number(mv.haber)||0,pagada:!!mv.pagada,vencida:!!mv.vencida});
+  });
+  if (!PROV_CONFIG[nombre]) PROV_CONFIG[nombre] = { nombre:nombre, cat:cat, plazo:plazoPorDefecto(cat) };
+  var sd = SALDOS_DATA.find(function(x){ return x.nombre === nombre; });
+  if (sd) { sd.saldo = saldoNum; sd.vencidoDrive = vencNum; }
+  else SALDOS_DATA.push({ nombre:nombre, cat:cat, saldo:saldoNum, vencido:0, vencidoDrive:vencNum,
+         plazo:(PROV_CONFIG[nombre] ? PROV_CONFIG[nombre].plazo : 7), movimientos:[] });
+}
+
+function refrescarProveedor(nombre, cat) {
+  refrescandoN++; actualizarBannerSaldos();
+  var cb = "jsonpProv_" + Date.now() + "_" + Math.random().toString(36).slice(2,6);
+  var s = document.createElement("script");
+  function fin(){ delete window[cb]; if (s.parentNode) s.parentNode.removeChild(s); refrescandoN = Math.max(0, refrescandoN-1); actualizarBannerSaldos(); }
+  window[cb] = function(data){
+    fin();
+    if (!(data && data.ok && Array.isArray(data.saldos))) return;
+    data.saldos.forEach(aplicarItemSaldo);
+    try { renderSaldos(document.getElementById("filtro-cat") ? document.getElementById("filtro-cat").value : ""); } catch(e){}
+    try { renderPorProveedor(); renderVencidas(); renderTodos(); } catch(e){}
+    try {
+      var provSel = document.getElementById("cc-prov").value;
+      if (tipo === "haber" && provSel === nombre && !Object.keys(facturasSeleccionadas).length) renderFacturasSelector();
+    } catch(e){}
+  };
+  s.onerror = fin;
+  s.src = SCRIPT_URL + "?action=saldoProv&prov=" + encodeURIComponent(nombre) + "&cat=" + encodeURIComponent(cat||"") + "&callback=" + cb;
+  document.body.appendChild(s);
 }
 
 // ── Configuración de proveedores ──────────────────────────────
