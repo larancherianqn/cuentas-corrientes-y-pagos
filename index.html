@@ -1000,7 +1000,9 @@ function sincronizarDesdeDrive() {
     localStorage.removeItem(MOVS_KEY);
     localStorage.removeItem(GD_KEY);
     localStorage.removeItem(COSTOS_KEY);
+    localStorage.removeItem(SALDOS_CACHE_KEY);   // saldos guardados para el arranque rápido
   } catch(e){}
+  SALDOS_CACHE_T = 0;
   // Vaciar en memoria
   MOVS_APP = [];
   MOVIMIENTOS = [];
@@ -1140,7 +1142,67 @@ document.addEventListener("DOMContentLoaded", function(){
 });
 
 // ── Leer saldos reales desde Drive (JSONP) ────────────────────
+var SALDOS_CACHE_KEY = "rancheria_saldos_cache_v1";
+var SALDOS_CACHE_T = 0;          // cuándo se guardaron los saldos que se están mostrando
+var saldosCacheAplicado = false;
+// Aplica una lista completa de saldos (de Drive o del guardado local) a la app
+function aplicarSaldosCompletos(saldos) {
+    var driveNombres = {};
+    MOVIMIENTOS_DRIVE = [];
+    saldos.forEach(function(item){
+      var nombre = item.proveedor.toUpperCase().trim();
+      var cat = item.cat || "gastos";
+      var saldoNum = Number(item.saldo) || 0;
+      var vencNum = Number(item.vencido) || 0;
+      if (Math.abs(saldoNum) < 1) saldoNum = 0;
+      if (vencNum < 1) vencNum = 0;
+      driveNombres[nombre] = true;
+      SALDOS_LIVE[nombre] = saldoNum;
+      SALDOS_LIVE_VENC[nombre] = vencNum;
+      PENDIENTES_DRIVE[nombre] = Array.isArray(item.pendientes) ? item.pendientes : [];
+      (Array.isArray(item.movimientos) ? item.movimientos : []).forEach(function(mv){
+        MOVIMIENTOS_DRIVE.push({proveedor:nombre,cat:cat,fecha:mv.fecha,desc:mv.concepto,ref:mv.factura,concepto:mv.concepto,factura:mv.factura,venc:mv.vence,debe:Number(mv.debe)||0,haber:Number(mv.haber)||0,pagada:!!mv.pagada,vencida:!!mv.vencida});
+      });
+      if (!PROV_CONFIG[nombre]) {
+        PROV_CONFIG[nombre] = { nombre:nombre, cat:cat, plazo:plazoPorDefecto(cat) };
+      }
+      var sd = SALDOS_DATA.find(function(x){return x.nombre===nombre;});
+      if (sd) { sd.saldo = saldoNum; sd.vencidoDrive = vencNum; }
+      else {
+        SALDOS_DATA.push({
+          nombre: nombre, cat: cat, saldo: saldoNum, vencido: 0, vencidoDrive: vencNum,
+          plazo: (PROV_CONFIG[nombre] ? PROV_CONFIG[nombre].plazo : 7), movimientos: []
+        });
+      }
+    });
+    // Limpiar proveedores fantasma: los que no están en Drive y no tienen movimientos locales
+    Object.keys(PROV_CONFIG).forEach(function(n){
+      var tieneLocal = MOVIMIENTOS.some(function(m){return m.proveedor===n;});
+      if (!driveNombres[n] && !tieneLocal) delete PROV_CONFIG[n];
+    });
+    SALDOS_DATA = SALDOS_DATA.filter(function(x){
+      var tieneLocal = MOVIMIENTOS.some(function(m){return m.proveedor===x.nombre;});
+      return driveNombres[x.nombre] || tieneLocal;
+    });
+    guardarConfig();
+    filtrarProveedores();
+    renderSaldos(document.getElementById("filtro-cat") ? document.getElementById("filtro-cat").value : "");
+    renderPorProveedor();
+    renderVencidas();
+    renderTodos();
+    if(typeof renderConfigList==="function" && document.getElementById("cfg-filtro")) renderConfigList(document.getElementById("cfg-filtro").value);
+}
+
 function cargarSaldosDrive() {
+  // 1) Mostrar al instante lo último que se vio (guardado en el celu), mientras se actualiza de fondo
+  if (!saldosCacheAplicado) {
+    saldosCacheAplicado = true;
+    try {
+      var c = JSON.parse(localStorage.getItem(SALDOS_CACHE_KEY) || "null");
+      if (c && Array.isArray(c.saldos) && c.saldos.length) { aplicarSaldosCompletos(c.saldos); SALDOS_CACHE_T = c.t || 0; }
+    } catch(e){}
+  }
+  // 2) Leer lo real de Drive
   saldosCargando = true;
   var inicioCarga = Date.now();
   actualizarBannerSaldos();
@@ -1151,50 +1213,9 @@ function cargarSaldosDrive() {
     if (s.parentNode) s.parentNode.removeChild(s);
     saldosCargando = false;
     if (data && data.ok && data.saldos) {
-      var driveNombres = {};
-      MOVIMIENTOS_DRIVE = [];
-      data.saldos.forEach(function(item){
-        var nombre = item.proveedor.toUpperCase().trim();
-        var cat = item.cat || "gastos";
-        var saldoNum = Number(item.saldo) || 0;
-        var vencNum = Number(item.vencido) || 0;
-        if (Math.abs(saldoNum) < 1) saldoNum = 0;
-        if (vencNum < 1) vencNum = 0;
-        driveNombres[nombre] = true;
-        SALDOS_LIVE[nombre] = saldoNum;
-        SALDOS_LIVE_VENC[nombre] = vencNum;
-        PENDIENTES_DRIVE[nombre] = Array.isArray(item.pendientes) ? item.pendientes : [];
-        (Array.isArray(item.movimientos) ? item.movimientos : []).forEach(function(mv){
-          MOVIMIENTOS_DRIVE.push({proveedor:nombre,cat:cat,fecha:mv.fecha,desc:mv.concepto,ref:mv.factura,concepto:mv.concepto,factura:mv.factura,venc:mv.vence,debe:Number(mv.debe)||0,haber:Number(mv.haber)||0,pagada:!!mv.pagada,vencida:!!mv.vencida});
-        });
-        if (!PROV_CONFIG[nombre]) {
-          PROV_CONFIG[nombre] = { nombre:nombre, cat:cat, plazo:plazoPorDefecto(cat) };
-        }
-        var sd = SALDOS_DATA.find(function(x){return x.nombre===nombre;});
-        if (sd) { sd.saldo = saldoNum; sd.vencidoDrive = vencNum; }
-        else {
-          SALDOS_DATA.push({
-            nombre: nombre, cat: cat, saldo: saldoNum, vencido: 0, vencidoDrive: vencNum,
-            plazo: (PROV_CONFIG[nombre] ? PROV_CONFIG[nombre].plazo : 7), movimientos: []
-          });
-        }
-      });
-      // Limpiar proveedores fantasma: los que no están en Drive y no tienen movimientos locales
-      Object.keys(PROV_CONFIG).forEach(function(n){
-        var tieneLocal = MOVIMIENTOS.some(function(m){return m.proveedor===n;});
-        if (!driveNombres[n] && !tieneLocal) delete PROV_CONFIG[n];
-      });
-      SALDOS_DATA = SALDOS_DATA.filter(function(x){
-        var tieneLocal = MOVIMIENTOS.some(function(m){return m.proveedor===x.nombre;});
-        return driveNombres[x.nombre] || tieneLocal;
-      });
-      guardarConfig();
-      filtrarProveedores();
-      renderSaldos(document.getElementById("filtro-cat") ? document.getElementById("filtro-cat").value : "");
-      renderPorProveedor();
-      renderVencidas();
-      renderTodos();
-      if(typeof renderConfigList==="function" && document.getElementById("cfg-filtro")) renderConfigList(document.getElementById("cfg-filtro").value);
+      aplicarSaldosCompletos(data.saldos);
+      // Guardar en el celu para mostrarlo al instante la próxima vez que se abra la app
+      try { localStorage.setItem(SALDOS_CACHE_KEY, JSON.stringify({ t: Date.now(), saldos: data.saldos })); SALDOS_CACHE_T = Date.now(); } catch(e){}
       // Lo que se cargó mientras leíamos todo puede haber quedado viejo: refrescar esos proveedores
       Object.keys(ULTIMO_ENVIO).forEach(function(n){
         if (ULTIMO_ENVIO[n] > inicioCarga) { var it = SALDOS_DATA.find(function(x){return x.nombre===n;}); refrescarProveedor(n, it ? it.cat : ""); }
@@ -1245,6 +1266,9 @@ function actualizarBannerSaldos() {
     sync.innerHTML = '<div class="sync-dot" style="background:#F59E0B"></div>Enviando '+nCola+'…';
   } else if (typeof refrescandoN!=="undefined" && refrescandoN > 0) {
     sync.innerHTML = '<div class="sync-dot" style="background:#F59E0B"></div>Actualizando…';
+  } else if (saldosCargando && SALDOS_CACHE_T) {
+    var min = Math.round((Date.now() - SALDOS_CACHE_T) / 60000);
+    sync.innerHTML = '<div class="sync-dot" style="background:#F59E0B"></div>Actualizando' + (min >= 1 ? ' (datos de hace ' + (min < 60 ? min + ' min' : Math.round(min/60) + ' h') + ')' : '') + '…';
   } else if (saldosCargando) {
     sync.innerHTML = '<div class="sync-dot" style="background:#F59E0B"></div>Leyendo saldos…';
   } else {
@@ -2068,6 +2092,17 @@ function refrescarProveedor(nombre, cat) {
     fin();
     if (!(data && data.ok && Array.isArray(data.saldos))) return;
     data.saldos.forEach(aplicarItemSaldo);
+    try {
+      var c = JSON.parse(localStorage.getItem(SALDOS_CACHE_KEY) || "null");
+      if (c && Array.isArray(c.saldos)) {
+        data.saldos.forEach(function(it){
+          var n = String(it.proveedor||"").toUpperCase().trim();
+          var i = c.saldos.findIndex(function(x){ return String(x.proveedor||"").toUpperCase().trim() === n; });
+          if (i >= 0) c.saldos[i] = it; else c.saldos.push(it);
+        });
+        localStorage.setItem(SALDOS_CACHE_KEY, JSON.stringify(c));
+      }
+    } catch(e){}
     try { renderSaldos(document.getElementById("filtro-cat") ? document.getElementById("filtro-cat").value : ""); } catch(e){}
     try { renderPorProveedor(); renderVencidas(); renderTodos(); } catch(e){}
     try {
