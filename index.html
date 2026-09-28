@@ -710,6 +710,22 @@ qS6QWxwWAW4ogCtGwWEkIdwyUAC0DBCFeMuvPsTF3f6fpoMZGRk3Mf8Fbd++c0bMJ9wAAAAASUVORK5C
     </div>
   </div>
 
+  <!-- ══ PIN para Resumen / Configuración ═══════════════════════ -->
+  <div id="tab-lock" style="display:none">
+    <div class="card">
+      <div style="text-align:center;padding:8px 0 4px">
+        <div style="font-size:32px;margin-bottom:8px">🔒</div>
+        <div style="font-weight:600;font-size:15px;color:#111;margin-bottom:4px">Sección protegida</div>
+        <div id="lock-msg" style="font-size:13px;color:#9CA3AF;margin-bottom:18px">Ingresá el PIN para continuar</div>
+        <input type="password" id="lock-pin" inputmode="numeric" maxlength="4" placeholder="••••"
+          oninput="onLockPinInput()" onkeydown="if(event.key==='Enter')verificarLockPin()"
+          style="width:140px;text-align:center;font-size:24px;letter-spacing:10px;padding:10px;border:1.5px solid #E5E5E0;border-radius:10px;outline:none;font-family:inherit;margin:0 auto;display:block"/>
+        <div id="lock-pin-err" style="font-size:12px;color:#DC2626;margin-top:10px;height:16px"></div>
+        <button class="btn-submit" style="background:#2563EB;max-width:200px;margin:8px auto 0" onclick="verificarLockPin()">Entrar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ══ RESUMEN MENSUAL ═════════════════════════════════════════ -->
   <div id="tab-resumen" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:8px">
@@ -1226,13 +1242,26 @@ function actualizarBannerSaldos() {
 }
 
 // ── Tabs ─────────────────────────────────────────────────────
+// Secciones protegidas con el mismo PIN que Costos fijos (se desbloquea una vez por sesión)
+var TABS_PROTEGIDAS = ["resumen","config"];
+var lockDestino = null;
 function showTab(t) {
+  var bloqueada = TABS_PROTEGIDAS.indexOf(t)!==-1 && !fijoDesbloqueado;
   ["cargar","movimientos","saldos","resumen","config"].forEach(function(id){
-    document.getElementById("tab-"+id).style.display = id===t?"":"none";
+    document.getElementById("tab-"+id).style.display = (id===t && !bloqueada)?"":"none";
   });
+  document.getElementById("tab-lock").style.display = bloqueada ? "" : "none";
+  if(bloqueada){
+    lockDestino = t;
+    document.getElementById("lock-msg").textContent = "Ingresá el PIN para ver " + (t==="resumen" ? "el resumen del mes" : "la configuración");
+    var lp = document.getElementById("lock-pin");
+    lp.value = ""; document.getElementById("lock-pin-err").textContent = "";
+    setTimeout(function(){ lp.focus(); }, 100);
+  }
   document.querySelectorAll(".tab").forEach(function(el,i){
     el.classList.toggle("active",["cargar","movimientos","saldos","resumen","config"][i]===t);
   });
+  if(bloqueada) return;
   if(t==="config"){ try{ renderConfigList(document.getElementById("cfg-filtro").value); }catch(e){ console.error(e); } }
   if(t==="resumen"){ try{ renderResumen(document.getElementById("res-mes").value); }catch(e){ console.error(e); } }
 }
@@ -1269,6 +1298,23 @@ function setModo(m) {
 }
 
 // ── Verificación de PIN ───────────────────────────────────────
+function onLockPinInput() {
+  var el = document.getElementById("lock-pin");
+  el.value = el.value.replace(/[^0-9]/g,"");
+  document.getElementById("lock-pin-err").textContent = "";
+  if(el.value.length===4) verificarLockPin();
+}
+function verificarLockPin() {
+  var el = document.getElementById("lock-pin");
+  if(el.value === FIJO_PIN){
+    fijoDesbloqueado = true;
+    showTab(lockDestino || "resumen");
+  } else {
+    document.getElementById("lock-pin-err").textContent = "PIN incorrecto";
+    el.value = ""; el.focus();
+  }
+}
+
 function onPinInput() {
   var v = document.getElementById("fijo-pin").value.replace(/[^0-9]/g,"");
   document.getElementById("fijo-pin").value = v;
